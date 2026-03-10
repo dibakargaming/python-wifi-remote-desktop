@@ -9,6 +9,7 @@ A lightweight, beginner-friendly Python application that allows you to stream yo
 - **Click Actions**: Supports left-click and right-click actions from the mobile interface.
 - **Display Controls**: Includes Zoom In/Out and Screen Rotation features to improve visibility on smaller screens.
 - **Fully Offline**: Works purely on your local network (LAN/WiFi). No internet connection or third-party servers required.
+- **Telegram PC Monitor Bot**: (Optional) Get an automatic Telegram message with your PC's IP and WiFi status whenever your computer turns on.
 
 ## 🛠️ Requirements
 
@@ -28,7 +29,13 @@ A lightweight, beginner-friendly Python application that allows you to stream yo
    ```bash
    pip install -r requirements.txt
    ```
-   *This installs `flask`, `mss`, `pyautogui`, `opencv-python`, and `numpy`.*
+   *This installs `flask`, `mss`, `pyautogui`, `opencv-python`, `numpy`, and `requests`.*
+
+4. **(Optional) Setup Telegram Startup Bot**
+   If you want your PC to automatically message you its IP address when it turns on:
+   - Create a Telegram bot via BotFather and get your **Token** and **Chat ID**.
+   - Open `config.ini` in this folder and add your credentials.
+   - Run `setup_startup.bat` to add the bot to your Windows startup folder.
 
 ## 🎮 How to Use
 
