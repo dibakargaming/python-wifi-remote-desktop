@@ -24,8 +24,9 @@ def get_local_ip():
     """Helper function to find the local IP address of this PC."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        # Doesn't even have to be reachable
-        s.connect(('10.255.255.255', 1))
+        # Doesn't even have to be reachable, but using a public IP ensures
+        # the OS routing table selects the primary active internet interface (like WiFi)
+        s.connect(('8.8.8.8', 80))
         IP = s.getsockname()[0]
     except Exception:
         IP = '127.0.0.1'
