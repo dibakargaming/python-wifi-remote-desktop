@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Remote Desktop</title>
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #000; overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            touch-action: none; /* Critical for custom gestures */
+        }
+        
+        #container {
+            width: 100%; height: 100%; position: relative;
+            display: flex; justify-content: center; align-items: center;
+        }
+
+        #screen {
+            max-width: 100%; max-height: 100%;
+            object-fit: contain; pointer-events: none; /* let container capture touches */
+            transform-origin: center center;
+            will-change: transform;
+        }
+        
+        #loading {
+            position: absolute; color: #888;
+            top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 0; pointer-events: none;
+        }
+
+        .overlay {
+            position: absolute; top:0; left:0; right:0; bottom:0;
+            background: rgba(0,0,0,0.85); color: white; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 2000;
+            transition: opacity 0.5s; pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Waiting for stream...</div>
+    
+    <div id="container">
+        <!-- We apply transforms to the wrapper so object-fit remains stable, 
+             or directly to image. Transforming the image is fine since its bounding box updates. -->
+        <img id="screen" src="/video_feed" alt="PC Screen" draggable="false">
+    </div>
+
+    <!-- Help Overlay that automatically disappears -->
+    <div id="helpOverlay" class="overlay">
+        <h2 style="margin-top:0;">Gesture Guide</h2>
+        <ul style="list-style: none; padding: 0; font-size: 18px; line-height: 2.5;">
+            <li>👆 <b>Tap:</b> Left Click</li>
+            <li>👆 <b>Hold & Drag:</b> Left Click & Drag</li>
+            <li>✌️ <b>2-Finger Tap:</b> Right Click</li>
+            <li>✌️ <b>Pinch & Drag:</b> Zoom & Pan</li>
+            <li>🖐️ <b>3-Finger Tap:</b> Rotate Screen</li>
+            <li>⌨️ <b>Keyboard:</b> Tap floating button</li>
+        </ul>
+        <p style="margin-top: 30px; color: #888; font-size: 14px;">(Disappearing in a few seconds...)</p>
+    </div>
+
+    <!-- Keyboard Input Support -->
+    <button id="keyboardBtn" style="position:fixed; bottom:20px; right:20px; z-index: 3000; font-size: 24px; border-radius: 50%; width: 50px; height: 50px; background: rgba(0,0,0,0.6); color: white; border: none; display: flex; justify-content: center; align-items: center; cursor: pointer; user-select: none;">⌨️</button>
+    <!-- Hidden input to summon keyboard. Opaque and out of view. -->
+    <input type="text" id="hiddenInput" style="position:absolute; top:-1000px; left:-1000px; opacity:0;" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+
+    <script>
+        const img = document.getElementById('screen');
+        const container = document.getElementById('container');
+        
+        // ================= KEYBOARD INPUT =================
+        const keyboardBtn = document.getElementById('keyboardBtn');
+        const hiddenInput = document.getElementById('hiddenInput');
+        let lastValue = "";
+
+        // Async queue to ensure keystrokes hit the server in the correct order
+        let keyQueue = [];
+        let isSending = false;
+
+        async function processKeyQueue() {
+            if (isSending || keyQueue.length === 0) return;
+            isSending = true;
+            while (keyQueue.length > 0) {
+                let payload = keyQueue.shift();
+                try {
+                    await fetch('/key', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                } catch (err) {
+                    console.error("Error sending key:", err);
+                }
+            }
+            isSending = false;
+        }
+
+        function sendKeyStroke(payload) {
+            keyQueue.push(payload);
+            processKeyQueue();
+        }
+
+        keyboardBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation(); // prevent triggering taps
+            hiddenInput.focus();
+            keyboardBtn.style.background = 'rgba(0,123,255,0.8)';
+            setTimeout(() => { keyboardBtn.style.background = 'rgba(0,0,0,0.6)'; }, 500);
+        });
+
+        // Use diffing on the value to handle autocorrect and predictive text duplicating characters
+        hiddenInput.addEventListener('input', (e) => {
+            let newValue = hiddenInput.value;
+            if (newValue === lastValue) return;
+
+            // Find how many characters from the start match exactly
+            let commonPrefixLen = 0;
+            const minLen = Math.min(lastValue.length, newValue.length);
+            while (commonPrefixLen < minLen && lastValue[commonPrefixLen] === newValue[commonPrefixLen]) {
+                commonPrefixLen++;
+            }
+
+            let backspacesNeeded = lastValue.length - commonPrefixLen;
+            let textToType = newValue.substring(commonPrefixLen);
+
+            // Send backspaces to erase any replaced part of the word (e.g. autocorrect overwrite)
+            for (let i = 0; i < backspacesNeeded; i++) {
+                sendKeyStroke({ key: 'backspace' });
+            }
+
+            // Send the new rest of the word
+            if (textToType.length > 0) {
+                sendKeyStroke({ text: textToType });
+            }
+
+            lastValue = newValue;
+        });
+
+        hiddenInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                sendKeyStroke({ key: 'enter' });
+                // Resetting buffer on Enter is a good idea to prevent endless growth
+                hiddenInput.value = '';
+                lastValue = '';
+            } else if (e.key === 'Backspace' && hiddenInput.value === '') {
+                // Manually trigger backspace if the input is already empty
+                sendKeyStroke({ key: 'backspace' });
+            }
+        });
+
+        // Auto-fade the help overlay
+        setTimeout(() => { document.getElementById('helpOverlay').style.opacity = '0'; }, 5000);
+
+        function showRipple(x, y, color) {
+            const ripple = document.createElement('div');
+            ripple.style.position = 'fixed'; // fixed to layer over everything accurately
+            ripple.style.left = (x - 20) + 'px';
+            ripple.style.top = (y - 20) + 'px';
+            ripple.style.width = '40px';
+            ripple.style.height = '40px';
+            ripple.style.borderRadius = '50%';
+            ripple.style.backgroundColor = color;
+            ripple.style.opacity = '1';
+            ripple.style.pointerEvents = 'none';
+            ripple.style.transition = 'all 0.4s ease-out';
+            ripple.style.zIndex = '9999';
+            document.body.appendChild(ripple);
+            
+            // force reflow
+            void ripple.offsetWidth;
+            
+            ripple.style.transform = 'scale(2.5)';
+            ripple.style.opacity = '0';
+            
+            setTimeout(() => { document.body.removeChild(ripple); }, 400);
+        }
+
+        // Send a scaled action to the PC exactly mapping the touch point
+        function sendAction(action, clientX, clientY, button='left') {
+            const rect = img.getBoundingClientRect();
+            let x = clientX - rect.left;
+            let y = clientY - rect.top;
+            let normX = x / rect.width;
+            let normY = y / rect.height;
+
+            if (normX >= 0 && normX <= 1 && normY >= 0 && normY <= 1) {
+                fetch('/action', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ type: action, x: normX, y: normY, button: button })
+                }).catch(err => console.error(err));
+            }
+        }
+
+        let transform = { x: 0, y: 0, scale: 1 };
+        let touchStartPos = { x: 0, y: 0 };
+        let panStartPos = { x: 0, y: 0 };
+        let transformStart = { x: 0, y: 0, scale: 1 };
+        let gestureMode = 'none';
+        let longPressTimeout = null;
+        let initialPinchDist = 1;
+
+        const LONG_PRESS_MS = 400;
+        const TAP_TOLERANCE = 15;
+
+        function updateTransform() {
+            img.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`;
+        }
+
+        function getCenter(t1, t2) {
+            return { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+        }
+
+        function getDistance(t1, t2) {
+            let dx = t1.clientX - t2.clientX;
+            let dy = t1.clientY - t2.clientY;
+            return Math.sqrt(dx*dx + dy*dy);
+        }
+
+        container.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            
+            // Hide keyboard if tapping the screen
+            if (document.activeElement === hiddenInput) {
+                hiddenInput.blur();
+            }
+
+            if (longPressTimeout) { clearTimeout(longPressTimeout); longPressTimeout = null; }
+            
+            if (e.touches.length === 1) {
+                touchStartPos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                gestureMode = 'tap_or_pan';
+                
+                longPressTimeout = setTimeout(() => {
+                    if (gestureMode === 'tap_or_pan') {
+                        gestureMode = 'long_press_drag';
+                        // Vibrate to indicate drag mode is active
+                        if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
+                        showRipple(touchStartPos.x, touchStartPos.y, '#007bff');
+                        // Tell server to hold mouse down
+                        sendAction('down', touchStartPos.x, touchStartPos.y, 'left');
+                    }
+                }, LONG_PRESS_MS);
+
+            } else if (e.touches.length === 2) {
+                if (gestureMode === 'tap_or_pan' || gestureMode === 'pan' || gestureMode === 'waitForRelease') {
+                    gestureMode = 'two_finger_tap_or_pinch';
+                    touchStartPos = getCenter(e.touches[0], e.touches[1]);
+                    initialPinchDist = Math.max(1, getDistance(e.touches[0], e.touches[1]));
+                    transformStart = { ...transform };
+                    panStartPos = { ...touchStartPos };
+                }
+            } else if (e.touches.length === 3) {
+                gestureMode = 'three_finger_rotate';
+            }
+        }, {passive: false});
+
+        container.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            
+            if (e.touches.length === 1) {
+                let dx = e.touches[0].clientX - touchStartPos.x;
+                let dy = e.touches[0].clientY - touchStartPos.y;
+                
+                // Switch from tap check to pan mode if moved too far
+                if (gestureMode === 'tap_or_pan' && (Math.abs(dx) > TAP_TOLERANCE || Math.abs(dy) > TAP_TOLERANCE)) {
+                    if (longPressTimeout) { clearTimeout(longPressTimeout); longPressTimeout = null; }
+                    gestureMode = 'pan';
+                    panStartPos = { x: touchStartPos.x, y: touchStartPos.y };
+                    transformStart = { ...transform };
+                }
+                
+                if (gestureMode === 'pan') {
+                    transform.x = transformStart.x + (e.touches[0].clientX - panStartPos.x);
+                    transform.y = transformStart.y + (e.touches[0].clientY - panStartPos.y);
+                    updateTransform();
+                } else if (gestureMode === 'long_press_drag') {
+                    sendAction('move', e.touches[0].clientX, e.touches[0].clientY);
+                }
+            } else if (e.touches.length === 2 && (gestureMode === 'two_finger_tap_or_pinch' || gestureMode === 'pinch')) {
+                let center = getCenter(e.touches[0], e.touches[1]);
+                
+                // Switch from 2-finger tap check to pinch/zoom mode if distance changes or center moves
+                if (gestureMode === 'two_finger_tap_or_pinch') {
+                    let dx = center.x - panStartPos.x;
+                    let dy = center.y - panStartPos.y;
+                    let distChange = Math.abs(getDistance(e.touches[0], e.touches[1]) - initialPinchDist);
+                    if (distChange > TAP_TOLERANCE || Math.abs(dx) > TAP_TOLERANCE || Math.abs(dy) > TAP_TOLERANCE) {
+                        gestureMode = 'pinch';
+                    }
+                }
+                
+                if (gestureMode === 'pinch') {
+                    let dist = getDistance(e.touches[0], e.touches[1]);
+                    let newScale = transformStart.scale * (dist / initialPinchDist);
+                    // Add constraints
+                    newScale = Math.max(1, Math.min(newScale, 5));
+                    transform.scale = newScale;
+                    
+                    // Pan while pinching
+                    transform.x = transformStart.x + (center.x - panStartPos.x);
+                    transform.y = transformStart.y + (center.y - panStartPos.y);
+                    updateTransform();
+                }
+            }
+        }, {passive: false});
+
+        container.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (longPressTimeout) { clearTimeout(longPressTimeout); longPressTimeout = null; }
+            
+            if (e.touches.length === 0) {
+                // All fingers lifted
+                if (gestureMode === 'tap_or_pan') {
+                    sendAction('tap', touchStartPos.x, touchStartPos.y, 'left');
+                    showRipple(touchStartPos.x, touchStartPos.y, 'rgba(255,255,255,0.8)');
+                } else if (gestureMode === 'long_press_drag') {
+                    sendAction('up', e.changedTouches[0].clientX, e.changedTouches[0].clientY, 'left');
+                } else if (gestureMode === 'two_finger_tap_or_pinch') {
+                    sendAction('tap', touchStartPos.x, touchStartPos.y, 'right');
+                    showRipple(touchStartPos.x, touchStartPos.y, '#ff4444');
+                } else if (gestureMode === 'three_finger_rotate') {
+                    fetch('/settings', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rotate_right: true}) });
+                    showRipple(e.changedTouches[0].clientX, e.changedTouches[0].clientY, '#00ff00');
+                }
+                
+                // Optional: Snap back to center if unzoomed
+                if (transform.scale === 1 && (transform.x !== 0 || transform.y !== 0)) {
+                    img.style.transition = 'transform 0.2s ease-out';
+                    transform.x = 0; transform.y = 0;
+                    updateTransform();
+                    setTimeout(() => { img.style.transition = ''; }, 200);
+                }
+                
+                gestureMode = 'none';
+            } else if (e.touches.length > 0) {
+                // If 1 finger lifted during a pinch, prevent accidental panic pan
+                if (gestureMode === 'pinch') gestureMode = 'waitForRelease';
+            }
+        }, {passive: false});
+        
+        // Include very basic mouse fallbacks (e.g. for testing on PC browser)
+        let isMouseDown = false;
+        container.addEventListener('mousedown', (e) => { 
+            isMouseDown = true; 
+            sendAction('down', e.clientX, e.clientY, 'left'); 
+        });
+        container.addEventListener('mousemove', (e) => { 
+            if(isMouseDown) sendAction('move', e.clientX, e.clientY); 
+        });
+        container.addEventListener('mouseup', (e) => { 
+            isMouseDown = false; 
+            sendAction('up', e.clientX, e.clientY, 'left'); 
+            // Send tap too if it was practically a click
+            sendAction('tap', e.clientX, e.clientY, 'left');
+        });
+    </script>
+</body>
+</html>
