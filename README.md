@@ -34,8 +34,8 @@ A lightweight, beginner-friendly Python application that allows you to stream yo
 4. **(Optional) Setup Telegram Startup Bot**
    If you want your PC to automatically message you its IP address when it turns on:
    - Create a Telegram bot via BotFather and get your **Token** and **Chat ID**.
-   - Open `config.ini` in this folder and add your credentials.
-   - Run `setup_startup.bat` to add the bot to your Windows startup folder.
+   - Run `setup_startup.bat`. This will automatically add the bot to your Windows startup folder AND create/open your `config.ini` file in Notepad.
+   - Paste your Token and Chat ID into the opened `config.ini` file and save it!
 
 ## 🎮 How to Use
 

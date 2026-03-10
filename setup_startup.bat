@@ -4,6 +4,9 @@ setlocal
 :: Get the directory of this script
 set SCRIPT_DIR=%~dp0
 
+echo Running initial setup and checking configuration...
+python "%SCRIPT_DIR%telegram_notifier.py"
+
 :: Define the target VBScript wrapper file in the Startup folder
 set STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
 set TARGET_VBS="%STARTUP_DIR%\RemoteDesktopBot.vbs"
