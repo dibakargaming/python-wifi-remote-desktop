@@ -54,7 +54,7 @@ def get_wifi_info():
         print(f"Error getting WiFi info: {e}")
         return "Error", "Error"
 
-def send_telegram_message(bot_token, chat_id, message):
+def send_telegram_message(bot_token, chat_id, message, reply_markup=None):
     """Sends a text message to a specific Telegram Chat ID."""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
@@ -62,12 +62,67 @@ def send_telegram_message(bot_token, chat_id, message):
         "text": message,
         "parse_mode": "HTML"
     }
+    
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+        
     try:
         response = requests.post(url, json=payload)
         response.raise_for_status()
         print("Message sent successfully!")
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
+
+def get_main_menu_keyboard():
+    """Returns the inline keyboard markup for the main menu."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "▶️ Start Stream", "callback_data": "start_stream"},
+                {"text": "🔄 Check Status", "callback_data": "check_status"}
+            ]
+        ]
+    }
+
+def start_streaming_server():
+    """Starts the server.py script in the background."""
+    if is_server_running():
+        return "Server is already running!"
+        
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        server_path = os.path.join(script_dir, "server.py")
+        
+        # Start the script detached
+        if os.name == 'nt':
+            # On Windows, use pythonw to hide console and DETACHED_PROCESS flag
+            subprocess.Popen(
+                ["pythonw.exe", server_path],
+                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                cwd=script_dir
+            )
+        else:
+            # On Linux/Mac
+            subprocess.Popen(["python3", server_path], cwd=script_dir, start_new_session=True)
+            
+        time.sleep(2) # Give it a moment to start up
+        if is_server_running():
+            return "✅ Stream started successfully!"
+        else:
+            return "⚠️ Attempted to start stream, but it may have failed."
+    except Exception as e:
+        return f"❌ Failed to start stream: {e}"
+
+def answer_callback_query(bot_token, callback_query_id, text=None):
+    """Answers a callback query to stop the loading spinner on the button."""
+    url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+    try:
+        requests.post(url, json=payload)
+    except Exception:
+        pass
 
 def get_status_message():
     """Gathers system information and formats the status message."""
@@ -104,15 +159,48 @@ def poll_telegram(bot_token, chat_id):
             if data.get('ok'):
                 for result in data['result']:
                     offset = result['update_id'] + 1
-                    message = result.get('message', {})
-                    msg_text = message.get('text', '')
-                    msg_chat_id = str(message.get('chat', {}).get('id', ''))
                     
-                    # Only respond to our configured chat_id
-                    if msg_text and msg_chat_id == str(chat_id):
-                        print(f"Received message from authorized user: {msg_text}")
-                        status_msg = get_status_message()
-                        send_telegram_message(bot_token, chat_id, status_msg)
+                    # Handle text messages
+                    if 'message' in result:
+                        message = result.get('message', {})
+                        msg_text = message.get('text', '')
+                        msg_chat_id = str(message.get('chat', {}).get('id', ''))
+                        
+                        # Only respond to our configured chat_id
+                        if msg_text and msg_chat_id == str(chat_id):
+                            print(f"Received message from authorized user: {msg_text}")
+                            status_msg = get_status_message()
+                            keyboard = get_main_menu_keyboard()
+                            send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
+                            
+                    # Handle inline button callbacks
+                    elif 'callback_query' in result:
+                        callback = result['callback_query']
+                        callback_id = callback.get('id')
+                        data_cmd = callback.get('data')
+                        msg_chat_id = str(callback.get('message', {}).get('chat', {}).get('id', ''))
+                        
+                        if msg_chat_id == str(chat_id):
+                            print(f"Received callback query: {data_cmd}")
+                            
+                            if data_cmd == "check_status":
+                                answer_callback_query(bot_token, callback_id, "Checking status...")
+                                status_msg = get_status_message()
+                                keyboard = get_main_menu_keyboard()
+                                send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
+                                
+                            elif data_cmd == "start_stream":
+                                answer_callback_query(bot_token, callback_id, "Starting stream...")
+                                result_msg = start_streaming_server()
+                                
+                                # Send the result followed by the updated status menu
+                                send_telegram_message(bot_token, chat_id, result_msg)
+                                time.sleep(1)
+                                status_msg = get_status_message()
+                                keyboard = get_main_menu_keyboard()
+                                send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
+                            else:
+                                answer_callback_query(bot_token, callback_id)
             else:
                 print(f"Error from Telegram API: {data.get('description')}")
                 time.sleep(5)
@@ -166,7 +254,8 @@ if __name__ == "__main__":
     # Send initial startup notification
     print("Sending Telegram Notification...")
     startup_message = get_status_message()
-    send_telegram_message(bot_token, chat_id, startup_message)
+    keyboard = get_main_menu_keyboard()
+    send_telegram_message(bot_token, chat_id, startup_message, reply_markup=keyboard)
     
     # Start long polling to listen for incoming messages
     print("Starting Telegram polling. Send any message to the bot to get the current data...")
