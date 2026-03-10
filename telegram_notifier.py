@@ -4,6 +4,7 @@ import requests
 import configparser
 import os
 import time
+from datetime import datetime
 
 def get_local_ip():
     """Finds the local IP address of this PC."""
@@ -56,6 +57,59 @@ def send_telegram_message(bot_token, chat_id, message):
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
 
+def get_status_message():
+    """Gathers system information and formats the status message."""
+    ip_address = get_local_ip()
+    ssid, signal = get_wifi_info()
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    message = (
+        "<b>💻 PC is Online!</b>\n\n"
+        f"<b>Time:</b> {current_time}\n"
+        f"<b>Remote Desktop IP:</b> <code>http://{ip_address}:5000</code>\n\n"
+        f"<b>WiFi Network:</b> {ssid}\n"
+        f"<b>Signal Strength:</b> {signal}\n"
+    )
+    return message
+
+def poll_telegram(bot_token, chat_id):
+    """Continuously polls Telegram for incoming messages."""
+    url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    offset = None
+    
+    while True:
+        try:
+            if offset is not None:
+                params = {'timeout': 30, 'offset': offset}
+            else:
+                params = {'timeout': 30}
+                
+            response = requests.get(url, params=params, timeout=40)
+            data = response.json()
+            
+            if data.get('ok'):
+                for result in data['result']:
+                    offset = result['update_id'] + 1
+                    message = result.get('message', {})
+                    msg_text = message.get('text', '')
+                    msg_chat_id = str(message.get('chat', {}).get('id', ''))
+                    
+                    # Only respond to our configured chat_id
+                    if msg_text and msg_chat_id == str(chat_id):
+                        print(f"Received message from authorized user: {msg_text}")
+                        status_msg = get_status_message()
+                        send_telegram_message(bot_token, chat_id, status_msg)
+            else:
+                print(f"Error from Telegram API: {data.get('description')}")
+                time.sleep(5)
+                
+        except requests.exceptions.RequestException as e:
+            print(f"Connection error: {e}")
+            time.sleep(5)
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            time.sleep(5)
+
 if __name__ == "__main__":
     # Wait a few seconds on startup to ensure network connection is fully established
     print("Waiting 10 seconds for network interfaces to initialize...")
@@ -95,18 +149,11 @@ if __name__ == "__main__":
         print("Error: config.ini is missing the [telegram] section, BOT_TOKEN, or CHAT_ID.")
         exit(1)
 
-    # Gather System Information
-    ip_address = get_local_ip()
-    ssid, signal = get_wifi_info()
-
-    # Format the message
-    message = (
-        "<b>💻 PC is Online!</b>\n\n"
-        f"<b>Remote Desktop IP:</b> <code>http://{ip_address}:5000</code>\n\n"
-        f"<b>WiFi Network:</b> {ssid}\n"
-        f"<b>Signal Strength:</b> {signal}\n"
-    )
-
-    # Send Notification
+    # Send initial startup notification
     print("Sending Telegram Notification...")
-    send_telegram_message(bot_token, chat_id, message)
+    startup_message = get_status_message()
+    send_telegram_message(bot_token, chat_id, startup_message)
+    
+    # Start long polling to listen for incoming messages
+    print("Starting Telegram polling. Send any message to the bot to get the current data...")
+    poll_telegram(bot_token, chat_id)
