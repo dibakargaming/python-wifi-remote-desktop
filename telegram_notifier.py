@@ -66,7 +66,19 @@ if __name__ == "__main__":
     config = configparser.ConfigParser()
     
     if not os.path.exists(config_path):
-        print("Error: config.ini not found! Please create it with your Bot Token and Chat ID.")
+        example_path = os.path.join(os.path.dirname(__file__), 'config.example.ini')
+        if os.path.exists(example_path):
+            import shutil
+            shutil.copy(example_path, config_path)
+            print("Created config.ini from template. Please update it with your credentials.")
+            try:
+                # This automatically opens the file in Notepad on Windows!
+                os.startfile(config_path)
+            except Exception:
+                pass
+        else:
+            print("Error: config.ini not found! Please create it with your Bot Token and Chat ID.")
+        # Exit so it doesn't try to send right now
         exit(1)
         
     config.read(config_path)
