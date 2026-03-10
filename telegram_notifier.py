@@ -19,6 +19,18 @@ def get_local_ip():
         s.close()
     return IP
 
+def is_server_running():
+    """Checks if the remote desktop streaming server is running on port 5000."""
+    try:
+        # Try to connect to localhost on port 5000
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(1)
+        result = sock.connect_ex(('127.0.0.1', 5000))
+        sock.close()
+        return result == 0
+    except Exception:
+        return False
+
 def get_wifi_info():
     """Extracts the active WiFi SSID and Signal Strength using Windows netsh command."""
     try:
@@ -62,11 +74,13 @@ def get_status_message():
     ip_address = get_local_ip()
     ssid, signal = get_wifi_info()
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    server_status = "🟢 Online" if is_server_running() else "🔴 Offline"
     
     message = (
         "<b>💻 PC is Online!</b>\n\n"
         f"<b>Time:</b> {current_time}\n"
-        f"<b>Remote Desktop IP:</b> <code>http://{ip_address}:5000</code>\n\n"
+        f"<b>Remote Desktop IP:</b> <code>http://{ip_address}:5000</code>\n"
+        f"<b>Stream Status:</b> {server_status}\n\n"
         f"<b>WiFi Network:</b> {ssid}\n"
         f"<b>Signal Strength:</b> {signal}\n"
     )
