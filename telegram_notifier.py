@@ -73,12 +73,14 @@ def send_telegram_message(bot_token, chat_id, message, reply_markup=None):
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
 
-def get_main_menu_keyboard():
-    """Returns the inline keyboard markup for the main menu."""
+def get_main_menu_keyboard(is_running):
+    """Returns the inline keyboard markup for the main menu dynamically based on server status."""
+    stream_button = {"text": "🛑 Stop Stream", "callback_data": "stop_stream"} if is_running else {"text": "▶️ Start Stream", "callback_data": "start_stream"}
+    
     return {
         "inline_keyboard": [
             [
-                {"text": "▶️ Start Stream", "callback_data": "start_stream"},
+                stream_button,
                 {"text": "🔄 Check Status", "callback_data": "check_status"}
             ]
         ]
@@ -112,6 +114,47 @@ def start_streaming_server():
             return "⚠️ Attempted to start stream, but it may have failed."
     except Exception as e:
         return f"❌ Failed to start stream: {e}"
+
+def stop_streaming_server():
+    """Stops the server.py script by terminating its process."""
+    if not is_server_running():
+        return "Server is already offline!"
+        
+    try:
+        if os.name == 'nt':
+            # On Windows, use taskkill to forcefully kill python processes running server.py
+            cmd = 'wmic process where "name=\'python.exe\' or name=\'pythonw.exe\'" get processid,commandline | findstr "server.py"'
+            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
+            output = result.stdout.strip()
+            
+            pids_killed = 0
+            if output:
+                lines = output.split('\n')
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        pid_str = parts[-1]
+                        if pid_str.isdigit():
+                            subprocess.run(['taskkill', '/F', '/PID', pid_str], capture_output=True)
+                            pids_killed += 1
+                            
+            if pids_killed > 0:
+                time.sleep(1)
+                if not is_server_running():
+                    return "🛑 Stream stopped successfully!"
+                else:
+                    return "⚠️ Attempted to stop stream, but port is still active."
+            return "Could not find the server process to stop."
+        else:
+            # Basic fallback for Linux/Mac using pkill
+            subprocess.run(["pkill", "-f", "server.py"])
+            time.sleep(1)
+            if not is_server_running():
+                return "🛑 Stream stopped successfully!"
+            else:
+                return "⚠️ Attempted to stop stream, but it failed."
+    except Exception as e:
+        return f"❌ Failed to stop stream: {e}"
 
 def answer_callback_query(bot_token, callback_query_id, text=None):
     """Answers a callback query to stop the loading spinner on the button."""
@@ -170,7 +213,7 @@ def poll_telegram(bot_token, chat_id):
                         if msg_text and msg_chat_id == str(chat_id):
                             print(f"Received message from authorized user: {msg_text}")
                             status_msg = get_status_message()
-                            keyboard = get_main_menu_keyboard()
+                            keyboard = get_main_menu_keyboard(is_server_running())
                             send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
                             
                     # Handle inline button callbacks
@@ -186,7 +229,7 @@ def poll_telegram(bot_token, chat_id):
                             if data_cmd == "check_status":
                                 answer_callback_query(bot_token, callback_id, "Checking status...")
                                 status_msg = get_status_message()
-                                keyboard = get_main_menu_keyboard()
+                                keyboard = get_main_menu_keyboard(is_server_running())
                                 send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
                                 
                             elif data_cmd == "start_stream":
@@ -197,7 +240,18 @@ def poll_telegram(bot_token, chat_id):
                                 send_telegram_message(bot_token, chat_id, result_msg)
                                 time.sleep(1)
                                 status_msg = get_status_message()
-                                keyboard = get_main_menu_keyboard()
+                                keyboard = get_main_menu_keyboard(is_server_running())
+                                send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
+                                
+                            elif data_cmd == "stop_stream":
+                                answer_callback_query(bot_token, callback_id, "Stopping stream...")
+                                result_msg = stop_streaming_server()
+                                
+                                # Send the result followed by the updated status menu
+                                send_telegram_message(bot_token, chat_id, result_msg)
+                                time.sleep(1)
+                                status_msg = get_status_message()
+                                keyboard = get_main_menu_keyboard(is_server_running())
                                 send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
                             else:
                                 answer_callback_query(bot_token, callback_id)
@@ -254,7 +308,7 @@ if __name__ == "__main__":
     # Send initial startup notification
     print("Sending Telegram Notification...")
     startup_message = get_status_message()
-    keyboard = get_main_menu_keyboard()
+    keyboard = get_main_menu_keyboard(is_server_running())
     send_telegram_message(bot_token, chat_id, startup_message, reply_markup=keyboard)
     
     # Start long polling to listen for incoming messages
