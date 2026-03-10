@@ -122,8 +122,8 @@ def stop_streaming_server():
         
     try:
         if os.name == 'nt':
-            # On Windows, use taskkill to forcefully kill python processes running server.py
-            cmd = 'wmic process where "name=\'python.exe\' or name=\'pythonw.exe\'" get processid,commandline | findstr "server.py"'
+            # On Windows, finding the process listening on port 5000 and killing it
+            cmd = 'netstat -ano | findstr LISTENING | findstr :5000'
             result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
             output = result.stdout.strip()
             
@@ -132,9 +132,9 @@ def stop_streaming_server():
                 lines = output.split('\n')
                 for line in lines:
                     parts = line.strip().split()
-                    if len(parts) >= 2:
+                    if len(parts) >= 5:
                         pid_str = parts[-1]
-                        if pid_str.isdigit():
+                        if pid_str.isdigit() and pid_str != "0":
                             subprocess.run(['taskkill', '/F', '/PID', pid_str], capture_output=True)
                             pids_killed += 1
                             
