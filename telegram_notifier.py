@@ -4,7 +4,15 @@ import requests
 import configparser
 import os
 import time
-from datetime import datetime
+import random
+import string
+server_process = None
+tunnel_process = None
+
+def log_message(msg):
+    with open("bot_log.txt", "a") as f:
+        f.write(f"{time.ctime()}: {msg}\n")
+    print(msg)
 
 def get_local_ip():
     """Finds the local IP address of this PC."""
@@ -19,17 +27,20 @@ def get_local_ip():
         s.close()
     return IP
 
-def is_server_running():
-    """Checks if the remote desktop streaming server is running on port 5000."""
-    try:
-        # Try to connect to localhost on port 5000
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
-        result = sock.connect_ex(('127.0.0.1', 5000))
-        sock.close()
-        return result == 0
-    except Exception:
-        return False
+def wait_for_network(timeout=60):
+    """Waits for an active internet connection by pinging a public DNS."""
+    start_time = time.time()
+    print("Waiting for network connection...")
+    while time.time() - start_time < timeout:
+        try:
+            # Try to connect to Google DNS on port 53 (DNS)
+            socket.create_connection(("8.8.8.8", 53), timeout=1)
+            print("Network connection established!")
+            return True
+        except OSError:
+            time.sleep(1)
+    print("Warning: Network timeout reached.")
+    return False
 
 def get_wifi_info():
     """Extracts the active WiFi SSID and Signal Strength using Windows netsh command."""
@@ -54,7 +65,140 @@ def get_wifi_info():
         print(f"Error getting WiFi info: {e}")
         return "Error", "Error"
 
-def send_telegram_message(bot_token, chat_id, message, reply_markup=None):
+def is_server_running(port=5000):
+    """Check if the streaming server is running by trying to connect to its port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+def start_server():
+    global server_process
+    if not is_server_running():
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        server_path = os.path.join(script_dir, 'server.py')
+        try:
+            CREATE_NO_WINDOW = 0x08000000
+            server_process = subprocess.Popen(['python', server_path], creationflags=CREATE_NO_WINDOW)
+        except Exception as e:
+            print(f"Failed to start server with creationflags: {e}")
+            server_process = subprocess.Popen(['python', server_path])
+        return True
+    return False
+
+def stop_server():
+    global server_process
+    stop_tunnel() # Also stop tunnel if server stops
+    if server_process:
+        try:
+            server_process.terminate()
+            server_process.wait(timeout=3)
+        except Exception:
+            try:
+                server_process.kill()
+            except:
+                pass
+        server_process = None
+        return True
+    
+    # Fallback: kill any python process running server.py
+    try:
+        subprocess.run('wmic process where "name=\'python.exe\' and commandline like \'%server.py%\'" call terminate', capture_output=True, shell=True)
+        return True
+    except:
+        pass
+    return False
+
+def start_tunnel():
+    global tunnel_process
+    if tunnel_process and tunnel_process.poll() is None:
+        stop_tunnel()
+    
+    # Generate random 10-character token
+    token = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+    
+    # Cloudflared path
+    cf_path = r"C:\Program Files (x86)\cloudflared\cloudflared.exe"
+    if not os.path.exists(cf_path):
+        cf_path = "cloudflared" # Fallback to PATH
+        
+    try:
+        CREATE_NO_WINDOW = 0x08000000
+        # Start Cloudflare Quick Tunnel
+        tunnel_process = subprocess.Popen(
+            [cf_path, 'tunnel', '--url', 'http://localhost:5000'], 
+            creationflags=CREATE_NO_WINDOW,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True
+        )
+        
+        # We need to read stderr to find the URL
+        public_url = None
+        start_time = time.time()
+        while time.time() - start_time < 20: # Wait up to 20s for URL
+            if not tunnel_process or not tunnel_process.stderr:
+                break
+            line = tunnel_process.stderr.readline()
+            if not line:
+                if tunnel_process.poll() is not None:
+                    break
+                time.sleep(0.5)
+                continue
+                
+            log_message(f"CF Log: {line.strip()}")
+            if "trycloudflare.com" in line:
+                # Extract URL: INF |  https://random-words.trycloudflare.com
+                parts = line.split("https://")
+                if len(parts) > 1:
+                    public_url = "https://" + parts[1].split()[0]
+                    break
+        
+        if not public_url:
+            stderr_out = tunnel_process.stderr.read() if tunnel_process.stderr else "No stderr"
+            log_message(f"Cloudflare failed to provide URL: {stderr_out}")
+            return f"Error: Could not retrieve tunnel URL.", None
+            
+        # Set the token on the local server
+        try:
+            requests.post("http://127.0.0.1:5000/set_token", json={"token": token}, timeout=5)
+            log_message(f"Security token set: {token}")
+        except Exception as e:
+            log_message(f"Failed to set token on server: {e}")
+            return f"Error: Server not responding to token set.", None
+            
+        log_message(f"Cloudflare tunnel started: {public_url}")
+        return public_url, token
+    except Exception as e:
+        log_message(f"Failed to start cloudflared: {e}")
+        return str(e), None
+
+def stop_tunnel():
+    global tunnel_process
+    if tunnel_process:
+        try:
+            tunnel_process.terminate()
+            tunnel_process.wait(timeout=3)
+        except:
+            try:
+                tunnel_process.kill()
+            except:
+                pass
+        tunnel_process = None
+    
+    # Force kill any remaining cloudflared
+    try:
+        subprocess.run('taskkill /f /im cloudflared.exe', capture_output=True, shell=True)
+    except:
+        pass
+        
+    # Clear token on server
+    try:
+        requests.post("http://127.0.0.1:5000/set_token", json={"token": None}, timeout=2)
+    except:
+        pass
+
+# Removed Ngrok URL Helper as we handle CF URL in start_tunnel
+
+def send_telegram_message(bot_token, chat_id, message):
     """Sends a text message to a specific Telegram Chat ID."""
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
@@ -62,10 +206,6 @@ def send_telegram_message(bot_token, chat_id, message, reply_markup=None):
         "text": message,
         "parse_mode": "HTML"
     }
-    
-    if reply_markup:
-        payload["reply_markup"] = reply_markup
-        
     try:
         response = requests.post(url, json=payload)
         response.raise_for_status()
@@ -73,203 +213,163 @@ def send_telegram_message(bot_token, chat_id, message, reply_markup=None):
     except Exception as e:
         print(f"Failed to send Telegram message: {e}")
 
-def get_main_menu_keyboard(is_running):
-    """Returns the inline keyboard markup for the main menu dynamically based on server status."""
-    stream_button = {"text": "🛑 Stop Stream", "callback_data": "stop_stream"} if is_running else {"text": "▶️ Start Stream", "callback_data": "start_stream"}
+def send_telegram_keyboard(bot_token, chat_id, text):
+    """Sends a message with an inline keyboard depending on server status."""
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     
-    return {
-        "inline_keyboard": [
-            [
-                stream_button,
-                {"text": "🔄 Check Status", "callback_data": "check_status"}
-            ]
-        ]
-    }
-
-def start_streaming_server():
-    """Starts the server.py script in the background."""
     if is_server_running():
-        return "Server is already running!"
-        
+        keyboard = {"inline_keyboard": [
+            [{"text": "🛑 Stop Stream", "callback_data": "stop_stream"}],
+            [{"text": "🌍 Anywhere", "callback_data": "anywhere"}, {"text": "🏠 Home", "callback_data": "home"}]
+        ]}
+    else:
+        keyboard = {"inline_keyboard": [[{"text": "▶️ Start Stream", "callback_data": "start_stream"}]]}
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": keyboard
+    }
     try:
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        server_path = os.path.join(script_dir, "server.py")
-        
-        # Start the script detached
-        if os.name == 'nt':
-            # On Windows, use pythonw to hide console and DETACHED_PROCESS flag
-            subprocess.Popen(
-                ["pythonw.exe", server_path],
-                creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                cwd=script_dir
-            )
-        else:
-            # On Linux/Mac
-            subprocess.Popen(["python3", server_path], cwd=script_dir, start_new_session=True)
-            
-        time.sleep(2) # Give it a moment to start up
-        if is_server_running():
-            return "✅ Stream started successfully!"
-        else:
-            return "⚠️ Attempted to start stream, but it may have failed."
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+        print("Keyboard sent successfully!")
     except Exception as e:
-        return f"❌ Failed to start stream: {e}"
+        print(f"Failed to send keyboard: {e}")
 
-def stop_streaming_server():
-    """Stops the server.py script by terminating its process."""
-    if not is_server_running():
-        return "Server is already offline!"
-        
-    try:
-        if os.name == 'nt':
-            # On Windows, finding the process listening on port 5000 and killing it
-            cmd = 'netstat -ano | findstr LISTENING | findstr :5000'
-            result = subprocess.run(cmd, capture_output=True, text=True, shell=True)
-            output = result.stdout.strip()
-            
-            pids_killed = 0
-            if output:
-                lines = output.split('\n')
-                for line in lines:
-                    parts = line.strip().split()
-                    if len(parts) >= 5:
-                        pid_str = parts[-1]
-                        if pid_str.isdigit() and pid_str != "0":
-                            subprocess.run(['taskkill', '/F', '/PID', pid_str], capture_output=True)
-                            pids_killed += 1
-                            
-            if pids_killed > 0:
-                time.sleep(1)
-                if not is_server_running():
-                    return "🛑 Stream stopped successfully!"
-                else:
-                    return "⚠️ Attempted to stop stream, but port is still active."
-            return "Could not find the server process to stop."
-        else:
-            # Basic fallback for Linux/Mac using pkill
-            subprocess.run(["pkill", "-f", "server.py"])
-            time.sleep(1)
-            if not is_server_running():
-                return "🛑 Stream stopped successfully!"
-            else:
-                return "⚠️ Attempted to stop stream, but it failed."
-    except Exception as e:
-        return f"❌ Failed to stop stream: {e}"
-
-def answer_callback_query(bot_token, callback_query_id, text=None):
-    """Answers a callback query to stop the loading spinner on the button."""
-    url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
-    payload = {"callback_query_id": callback_query_id}
-    if text:
-        payload["text"] = text
-    try:
-        requests.post(url, json=payload)
-    except Exception:
-        pass
-
-def get_status_message():
-    """Gathers system information and formats the status message."""
-    ip_address = get_local_ip()
-    ssid, signal = get_wifi_info()
-    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    server_status = "🟢 Online" if is_server_running() else "🔴 Offline"
-    
-    message = (
-        "<b>💻 PC is Online!</b>\n\n"
-        f"<b>Time:</b> {current_time}\n"
-        f"<b>Remote Desktop IP:</b> <code>http://{ip_address}:5000</code>\n"
-        f"<b>Stream Status:</b> {server_status}\n\n"
-        f"<b>WiFi Network:</b> {ssid}\n"
-        f"<b>Signal Strength:</b> {signal}\n"
-    )
-    return message
-
-def poll_telegram(bot_token, chat_id):
-    """Continuously polls Telegram for incoming messages."""
+def handle_updates(bot_token, valid_chat_ids, ip_address, ssid, signal):
+    """Long polling loop for Telegram updates."""
     url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
-    offset = None
+    
+    # Drain old updates on startup to avoid spamming replies to old messages
+    offset = 0
+    try:
+        startup_resp = requests.get(url, params={"offset": 0, "timeout": 5})
+        startup_data = startup_resp.json()
+        if startup_data.get("ok") and startup_data.get("result"):
+            offset = startup_data["result"][-1]["update_id"] + 1
+            requests.get(url, params={"offset": offset, "timeout": 5})
+    except Exception as e:
+        print(f"Failed to drain old updates: {e}")
+
+    print("Listening for Telegram messages...")
+    
+    last_telegram_interaction = time.time()
     
     while True:
         try:
-            if offset is not None:
-                params = {'timeout': 30, 'offset': offset}
-            else:
-                params = {'timeout': 30}
-                
+            params = {"offset": offset, "timeout": 30}
             response = requests.get(url, params=params, timeout=40)
             data = response.json()
             
-            if data.get('ok'):
-                for result in data['result']:
-                    offset = result['update_id'] + 1
+            if data.get("ok"):
+                for update in data["result"]:
+                    offset = update["update_id"] + 1
                     
-                    # Handle text messages
-                    if 'message' in result:
-                        message = result.get('message', {})
-                        msg_text = message.get('text', '')
-                        msg_chat_id = str(message.get('chat', {}).get('id', ''))
+                    if "callback_query" in update:
+                        callback_id = update["callback_query"]["id"]
+                        callback_data = update["callback_query"]["data"]
+                        msg_chat_id = str(update["callback_query"]["message"]["chat"]["id"])
                         
-                        # Only respond to our configured chat_id
-                        if msg_text and msg_chat_id == str(chat_id):
-                            print(f"Received message from authorized user: {msg_text}")
-                            status_msg = get_status_message()
-                            keyboard = get_main_menu_keyboard(is_server_running())
-                            send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
-                            
-                    # Handle inline button callbacks
-                    elif 'callback_query' in result:
-                        callback = result['callback_query']
-                        callback_id = callback.get('id')
-                        data_cmd = callback.get('data')
-                        msg_chat_id = str(callback.get('message', {}).get('chat', {}).get('id', ''))
+                        if msg_chat_id not in valid_chat_ids:
+                            continue
                         
-                        if msg_chat_id == str(chat_id):
-                            print(f"Received callback query: {data_cmd}")
-                            
-                            if data_cmd == "check_status":
-                                answer_callback_query(bot_token, callback_id, "Checking status...")
-                                status_msg = get_status_message()
-                                keyboard = get_main_menu_keyboard(is_server_running())
-                                send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
-                                
-                            elif data_cmd == "start_stream":
-                                answer_callback_query(bot_token, callback_id, "Starting stream...")
-                                result_msg = start_streaming_server()
-                                
-                                # Send the result followed by the updated status menu
-                                send_telegram_message(bot_token, chat_id, result_msg)
-                                time.sleep(1)
-                                status_msg = get_status_message()
-                                keyboard = get_main_menu_keyboard(is_server_running())
-                                send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
-                                
-                            elif data_cmd == "stop_stream":
-                                answer_callback_query(bot_token, callback_id, "Stopping stream...")
-                                result_msg = stop_streaming_server()
-                                
-                                # Send the result followed by the updated status menu
-                                send_telegram_message(bot_token, chat_id, result_msg)
-                                time.sleep(1)
-                                status_msg = get_status_message()
-                                keyboard = get_main_menu_keyboard(is_server_running())
-                                send_telegram_message(bot_token, chat_id, status_msg, reply_markup=keyboard)
+                        last_telegram_interaction = time.time()
+                        
+                        if callback_data == "start_stream":
+                            if start_server():
+                                text = "✅ Server started."
                             else:
-                                answer_callback_query(bot_token, callback_id)
+                                text = "⚠️ Server is already running."
+                        elif callback_data == "stop_stream":
+                            if stop_server():
+                                text = "🛑 Server stopped."
+                            else:
+                                text = "⚠️ Server is already offline."
+                        elif callback_data == "anywhere":
+                            log_message("Anywhere button clicked. Starting Cloudflare Tunnel.")
+                            public_url, token = start_tunnel()
+                            if public_url and not public_url.startswith("Error"):
+                                full_url = f"{public_url}/?token={token}"
+                                text = (
+                                    f"🌍 <b>Anywhere Access (Secured):</b>\n\n"
+                                    f"🔗 <b>Link:</b> {full_url}\n\n"
+                                    f"⚠️ <i>This is a bandwidth-free link. Clicking 'Anywhere' again will regenerate the link and token.</i>"
+                                )
+                                send_telegram_message(bot_token, msg_chat_id, text)
+                                text = "Bandwidth-free link generated! 🔓"
+                            else:
+                                log_message(f"Start Tunnel failed: {public_url}")
+                                text = "⚠️ Failed to start Tunnel."
+                                send_telegram_message(bot_token, msg_chat_id, f"❌ <b>Tunnel Error:</b>\n{public_url}")
+                        elif callback_data == "home":
+                            stop_tunnel()
+                            log_message("Home button clicked. Tunnel stopped.")
+                            local_url = f"http://{ip_address}:5000"
+                            text = f"🏠 <b>Home Access:</b>\n{local_url}"
+                            send_telegram_message(bot_token, msg_chat_id, text)
+                            text = "Home mode active!"
+                                
+                        requests.post(f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery", json={"callback_query_id": callback_id, "text": text})
+                        send_telegram_keyboard(bot_token, msg_chat_id, "<b>Remote Desktop Control</b>")
+                        
+                    elif "message" in update and "text" in update["message"]:
+                        msg_chat_id = str(update["message"]["chat"]["id"])
+                        msg_text_raw = update["message"]["text"]
+                        
+                        if msg_chat_id not in valid_chat_ids:
+                            continue
+                        
+                        last_telegram_interaction = time.time()
+                        msg_text = msg_text_raw.lower()
+                        
+                        if msg_text in ["hi", "hello", "hey", "start", "/start", "help", "menu", "?", "status"]:
+                            welcome_msg = (
+                                "👋 Hello! I am your PC Monitor Bot.\n\n"
+                                "<b>🏠 Default Connection: Home Network</b>\n"
+                                f"<b>Local IP:</b> <code>http://{ip_address}:5000</code>\n\n"
+                                "Click <b>Anywhere</b> to enable remote access."
+                            )
+                            send_telegram_keyboard(bot_token, msg_chat_id, welcome_msg)
+                        else:
+                            reply_text = "I received your message! Send 'Menu' or 'Hi' to see the Remote Desktop controls."
+                            send_telegram_message(bot_token, msg_chat_id, reply_text)
             else:
-                print(f"Error from Telegram API: {data.get('description')}")
+                print(f"Telegram API Error: {data}")
                 time.sleep(5)
-                
-        except requests.exceptions.RequestException as e:
-            print(f"Connection error: {e}")
-            time.sleep(5)
+                            
+        except requests.exceptions.Timeout:
+            pass  # Proceed to check inactivity even on timeout
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            print(f"Error checking updates: {e}")
             time.sleep(5)
+            
+        # Check for inactivity
+        if is_server_running():
+            try:
+                status_resp = requests.get("http://127.0.0.1:5000/status", timeout=2)
+                if status_resp.status_code == 200:
+                    server_last_interaction = status_resp.json().get("last_interaction", time.time())
+                    
+                    time_since_telegram = time.time() - last_telegram_interaction
+                    time_since_server = time.time() - server_last_interaction
+                    
+                    # 600 seconds = 10 minutes
+                    if time_since_telegram > 600 and time_since_server > 600:
+                        print("Auto-stopping server due to 10 minutes of inactivity.")
+                        stop_server()
+                        for cid in valid_chat_ids:
+                            send_telegram_message(bot_token, cid, "🛑 <b>Server auto-stopped</b> due to 10 minutes of inactivity.")
+            except Exception as e:
+                pass  # Server might not be fully up yet or is busy
 
 if __name__ == "__main__":
-    # Wait a few seconds on startup to ensure network connection is fully established
-    print("Waiting 10 seconds for network interfaces to initialize...")
-    time.sleep(10)
+    # Ensure the script runs in its own directory (important for autostart/boot)
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+
+    # Wait for active internet connection to avoid bot crashing immediately on boot
+    wait_for_network(timeout=60)
     
     # Read configuration file
     config_path = os.path.join(os.path.dirname(__file__), 'config.ini')
@@ -282,22 +382,22 @@ if __name__ == "__main__":
             shutil.copy(example_path, config_path)
             print("Created config.ini from template. Please update it with your credentials.")
             try:
-                # This automatically opens the file in Notepad on Windows!
-                os.startfile(config_path)
+                subprocess.run(['start', '', config_path], shell=True)
             except Exception:
                 pass
         else:
             print("Error: config.ini not found! Please create it with your Bot Token and Chat ID.")
-        # Exit so it doesn't try to send right now
         exit(1)
         
     config.read(config_path)
     
     try:
         bot_token = config.get('telegram', 'BOT_TOKEN')
-        chat_id = config.get('telegram', 'CHAT_ID')
+        chat_id_str = config.get('telegram', 'CHAT_ID')
+        chat_ids = [c.strip() for c in chat_id_str.split(',') if c.strip()]
+        chat_ids = list(set(chat_ids))  # Remove duplicates to prevent spamming!
         
-        if bot_token == "YOUR_TELEGRAM_BOT_TOKEN_HERE" or chat_id == "YOUR_TELEGRAM_CHAT_ID_HERE":
+        if bot_token == "YOUR_TELEGRAM_BOT_TOKEN_HERE" or not chat_ids or chat_ids[0] == "YOUR_TELEGRAM_CHAT_ID_HERE":
             print("Error: You must update config.ini with your actual Token and Chat ID.")
             exit(1)
             
@@ -305,12 +405,24 @@ if __name__ == "__main__":
         print("Error: config.ini is missing the [telegram] section, BOT_TOKEN, or CHAT_ID.")
         exit(1)
 
-    # Send initial startup notification
+    # Gather System Information
+    ip_address = get_local_ip()
+    ssid, signal = get_wifi_info()
+
+    # Format the message
+    welcome_msg = (
+        "<b>💻 PC is Online!</b>\n\n"
+        "<b>🏠 Default Connection: Home Network</b>\n"
+        f"<b>Remote Desktop IP:</b> <code>http://{ip_address}:5000</code>\n\n"
+        f"<b>WiFi Network:</b> {ssid}\n"
+        f"<b>Signal Strength:</b> {signal}\n\n"
+        "Click <b>Anywhere</b> to enable remote access."
+    )
+
+    # Send Notification
     print("Sending Telegram Notification...")
-    startup_message = get_status_message()
-    keyboard = get_main_menu_keyboard(is_server_running())
-    send_telegram_message(bot_token, chat_id, startup_message, reply_markup=keyboard)
-    
-    # Start long polling to listen for incoming messages
-    print("Starting Telegram polling. Send any message to the bot to get the current data...")
-    poll_telegram(bot_token, chat_id)
+    for cid in chat_ids:
+        send_telegram_keyboard(bot_token, cid, welcome_msg)
+
+    # Start the listening loop and keep script running
+    handle_updates(bot_token, chat_ids, ip_address, ssid, signal)

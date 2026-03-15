@@ -4,21 +4,47 @@ import cv2
 import numpy as np
 import pyautogui
 import socket
+import time
 
 # Initialize the Flask application
 app = Flask(__name__)
 
 # State dictionary for dynamic settings
 state = {
-    'rotation': 0
+    'rotation': 0,
+    'last_interaction': time.time()
 }
 
 # Configure pyautogui
-# FAILSAFE is disabled so we can move the mouse to the very edge of the screen
-# without unintentionally triggering pyautogui's anti-lockout fail-safe.
 pyautogui.FAILSAFE = False 
-# Remove default delay so real-time control feels responsive
 pyautogui.PAUSE = 0.0      
+
+# Security Token (None means no auth required, used for Home mode)
+app.config['ACCESS_TOKEN'] = None
+
+@app.before_request
+def check_auth():
+    """Simple token-based security for Anywhere mode."""
+    # Allow local requests (like setting the token or bot status checks) without tokens
+    if request.remote_addr == '127.0.0.1':
+        return
+        
+    token = app.config.get('ACCESS_TOKEN')
+    if token:
+        # Check for token in URL parameters
+        provided_token = request.args.get('token')
+        if provided_token != token:
+            return "Unauthorized: Invalid or expired token.", 403
+
+@app.route('/set_token', methods=['POST'])
+def set_token():
+    """Sets the security token. Only accessible from localhost."""
+    if request.remote_addr != '127.0.0.1':
+        return "Forbidden", 403
+    
+    data = request.json
+    app.config['ACCESS_TOKEN'] = data.get('token')
+    return jsonify({"status": "success", "token_set": bool(app.config['ACCESS_TOKEN'])})
 
 def get_local_ip():
     """Helper function to find the local IP address of this PC."""
@@ -92,6 +118,7 @@ def video_feed():
 @app.route('/settings', methods=['POST'])
 def update_settings():
     """Endpoint to update global server settings like rotation."""
+    state['last_interaction'] = time.time()
     data = request.json
     if data.get('rotate_right'):
         state['rotation'] = (state['rotation'] + 90) % 360
@@ -103,6 +130,7 @@ def action():
     API endpoint that receives mouse coordinates and action types from the client.
     Coordinates are normalized (0.0 to 1.0) so they scale regardless of the client screen size.
     """
+    state['last_interaction'] = time.time()
     data = request.json
     action_type = data.get('type')
     button = data.get('button', 'left') # Left by default
@@ -153,17 +181,30 @@ def action():
 @app.route('/key', methods=['POST'])
 def handle_key():
     """Endpoint to handle keyboard input from the client."""
+    state['last_interaction'] = time.time()
     data = request.json
     key = data.get('key')
     text = data.get('text')
     
-    # We use pyautogui.write for full text and pyautogui.press for special keys
     if text:
         pyautogui.write(text)
     elif key:
-        pyautogui.press(key)
+        if isinstance(key, list):
+            # Handle hotkeys like ['ctrl', 'alt', 'del']
+            pyautogui.hotkey(*key)
+        else:
+            # Handle single keys
+            pyautogui.press(key)
         
     return jsonify({"status": "success"})
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Endpoint for the telegram bot to check server activity."""
+    return jsonify({
+        "status": "success",
+        "last_interaction": state['last_interaction']
+    })
 
 if __name__ == '__main__':
     # Print out connection instructions

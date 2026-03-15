@@ -34,7 +34,61 @@
             position: absolute; top:0; left:0; right:0; bottom:0;
             background: rgba(0,0,0,0.85); color: white; display: flex; flex-direction: column;
             justify-content: center; align-items: center; z-index: 2000;
-            transition: opacity 0.5s; pointer-events: none;
+            transition: opacity 0.3s; pointer-events: none;
+        }
+
+        .glass-btn {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            display: flex; justify-content: center; align-items: center;
+            cursor: pointer; user-select: none;
+            transition: all 0.2s;
+        }
+        .glass-btn:active { background: rgba(255, 255, 255, 0.3); transform: scale(0.9); }
+
+        #guideBtn {
+            position: fixed; top: 15px; right: 15px; z-index: 3000;
+            width: 44px; height: 44px; border-radius: 50%; font-size: 20px;
+        }
+
+        #volumeControls {
+            position: fixed; top: 15px; left: 15px; z-index: 3000;
+            display: flex; gap: 10px;
+        }
+        .vol-btn { width: 44px; height: 44px; border-radius: 12px; font-size: 18px; }
+
+        #virtualKeyboard {
+            position: fixed; bottom: -100%; left: 0; width: 100%;
+            background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            z-index: 4000; padding: 10px; box-sizing: border-box;
+            transition: bottom 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            display: flex; flex-direction: column; gap: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+        #virtualKeyboard.active { bottom: 0; }
+
+        .kb-row { display: flex; gap: 5px; width: 100%; justify-content: center; }
+        .kb-key {
+            flex: 1; height: 45px; border-radius: 6px; font-size: 14px; font-weight: 500;
+            background: rgba(255, 255, 255, 0.15); border: 1px solid rgba(255, 255, 255, 0.1);
+            color: white; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;
+        }
+        .kb-key:active { background: rgba(255, 255, 255, 0.4); }
+        .kb-key-wide { flex: 2; }
+        .kb-key-extra-wide { flex: 4; }
+        .kb-key-accent { background: rgba(0, 123, 255, 0.6); }
+
+        #handleCloseKB {
+            width: 100%; height: 20px; display: flex; justify-content: center; align-items: center;
+            margin-bottom: 5px; opacity: 0.5;
+        }
+        #handleCloseKB::after {
+            content: ""; width: 40px; height: 4px; background: white; border-radius: 2px;
         }
     </style>
 </head>
@@ -47,8 +101,8 @@
         <img id="screen" src="/video_feed" alt="PC Screen" draggable="false">
     </div>
 
-    <!-- Help Overlay that automatically disappears -->
-    <div id="helpOverlay" class="overlay">
+    <!-- Help Overlay -->
+    <div id="helpOverlay" class="overlay" style="opacity: 0; pointer-events: none;">
         <h2 style="margin-top:0;">Gesture Guide</h2>
         <ul style="list-style: none; padding: 0; font-size: 18px; line-height: 2.5;">
             <li>👆 <b>Tap:</b> Left Click</li>
@@ -56,22 +110,69 @@
             <li>✌️ <b>2-Finger Tap:</b> Right Click</li>
             <li>✌️ <b>Pinch & Drag:</b> Zoom & Pan</li>
             <li>🖐️ <b>3-Finger Tap:</b> Rotate Screen</li>
-            <li>⌨️ <b>Keyboard:</b> Tap floating button</li>
+            <li>⌨️ <b>Keyboard:</b> Bottom buttons</li>
         </ul>
-        <p style="margin-top: 30px; color: #888; font-size: 14px;">(Disappearing in a few seconds...)</p>
+        <p style="margin-top: 30px; color: #888; font-size: 14px;">(Closing in 2 seconds...)</p>
     </div>
 
-    <!-- Keyboard Input Support -->
-    <button id="keyboardBtn" style="position:fixed; bottom:20px; right:20px; z-index: 3000; font-size: 24px; border-radius: 50%; width: 50px; height: 50px; background: rgba(0,0,0,0.6); color: white; border: none; display: flex; justify-content: center; align-items: center; cursor: pointer; user-select: none;">⌨️</button>
-    <!-- Hidden input to summon keyboard. Opaque and out of view. -->
+    <!-- Guide & Volume Controls -->
+    <div id="volumeControls">
+        <div class="glass-btn vol-btn" onclick="sendVolume('volumemute')">🔇</div>
+        <div class="glass-btn vol-btn" onclick="sendVolume('volumedown')">🔉</div>
+        <div class="glass-btn vol-btn" onclick="sendVolume('volumeup')">🔊</div>
+    </div>
+
+    <div id="guideBtn" class="glass-btn" onclick="toggleGuide()">ⓘ</div>
+
+    <!-- Hidden input to summon system keyboard if needed -->
     <input type="text" id="hiddenInput" style="position:absolute; top:-1000px; left:-1000px; opacity:0;" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+
+    <!-- Virtual PC Keyboard -->
+    <div id="virtualKeyboard">
+        <div id="handleCloseKB" onclick="toggleVirtualKeyboard()"></div>
+        <div class="kb-row">
+            <div class="kb-key kb-key-accent" onclick="sendHotKey(['alt', 'enter'])">Alt+Ent</div>
+            <div class="kb-key kb-key-accent" onclick="sendHotKey(['alt', 'f4'])">Alt+F4</div>
+            <div class="kb-key kb-key-accent" onclick="sendHotKey(['ctrl', 'shift', 'esc'])">TaskMgr</div>
+            <div class="kb-key" onclick="sendVK('f11')">F11</div>
+            <div class="kb-key" onclick="sendVK('printscreen')">PrtSc</div>
+        </div>
+        <div class="kb-row">
+            <div class="kb-key" onclick="sendVK('esc')">Esc</div>
+            <div class="kb-key" onclick="sendVK('f1')">F1</div>
+            <div class="kb-key" onclick="sendVK('f5')">F5</div>
+            <div class="kb-key kb-key-wide" onclick="sendVK('backspace')">Backspace</div>
+        </div>
+        <div class="kb-row">
+            <div class="kb-key" onclick="sendVK('tab')">Tab</div>
+            <div class="kb-key" onclick="sendVK('up')">▲</div>
+            <div class="kb-key" onclick="sendVK('win')">Win</div>
+            <div class="kb-key kb-key-wide" onclick="sendVK('enter')">Enter</div>
+        </div>
+        <div class="kb-row">
+            <div class="kb-key" onclick="sendVK('ctrl')">Ctrl</div>
+            <div class="kb-key" onclick="sendVK('alt')">Alt</div>
+            <div class="kb-key" onclick="sendVK('left')">◀</div>
+            <div class="kb-key" onclick="sendVK('down')">▼</div>
+            <div class="kb-key" onclick="sendVK('right')">▶</div>
+        </div>
+        <div class="kb-row">
+            <div class="kb-key kb-key-extra-wide" onclick="sendVK('space')">Space bar</div>
+            <div class="kb-key" onclick="toggleVirtualKeyboard()">Close</div>
+        </div>
+    </div>
+
+    <div id="keyboardOptions" style="position:fixed; bottom:20px; right:20px; z-index: 3000; display: flex; flex-direction: column; gap: 10px; align-items: flex-end;">
+        <div id="sysKeyboardBtn" class="glass-btn" onclick="showSystemKeyboard()" style="width: 50px; height: 50px; border-radius: 50%; font-size: 22px;">📱</div>
+        <div id="pcKeyboardBtn" class="glass-btn" style="width: 60px; height: 60px; border-radius: 50%; font-size: 26px;">⌨️</div>
+    </div>
 
     <script>
         const img = document.getElementById('screen');
         const container = document.getElementById('container');
         
         // ================= KEYBOARD INPUT =================
-        const keyboardBtn = document.getElementById('keyboardBtn');
+        const pcKeyboardBtn = document.getElementById('pcKeyboardBtn');
         const hiddenInput = document.getElementById('hiddenInput');
         let lastValue = "";
 
@@ -102,13 +203,49 @@
             processKeyQueue();
         }
 
-        keyboardBtn.addEventListener('click', (e) => {
+        pcKeyboardBtn.addEventListener('click', (e) => {
             e.preventDefault();
-            e.stopPropagation(); // prevent triggering taps
-            hiddenInput.focus();
-            keyboardBtn.style.background = 'rgba(0,123,255,0.8)';
-            setTimeout(() => { keyboardBtn.style.background = 'rgba(0,0,0,0.6)'; }, 500);
+            e.stopPropagation();
+            toggleVirtualKeyboard();
         });
+
+        function showSystemKeyboard() {
+            if (navigator.vibrate) navigator.vibrate(10);
+            hiddenInput.focus();
+        }
+
+        function toggleVirtualKeyboard() {
+            const kb = document.getElementById('virtualKeyboard');
+            kb.classList.toggle('active');
+            if (kb.classList.contains('active')) {
+                if (navigator.vibrate) navigator.vibrate(15);
+            }
+        }
+
+        function toggleGuide() {
+            const overlay = document.getElementById('helpOverlay');
+            overlay.style.opacity = '1';
+            overlay.style.pointerEvents = 'auto';
+            setTimeout(() => {
+                overlay.style.opacity = '0';
+                overlay.style.pointerEvents = 'none';
+            }, 2000);
+        }
+
+        function sendVK(key) {
+            if (navigator.vibrate) navigator.vibrate(5);
+            sendKeyStroke({ key: key });
+        }
+
+        function sendHotKey(keys) {
+            if (navigator.vibrate) navigator.vibrate(20);
+            sendKeyStroke({ key: keys });
+        }
+
+        function sendVolume(action) {
+            if (navigator.vibrate) navigator.vibrate(15);
+            sendKeyStroke({ key: action });
+        }
 
         // Use diffing on the value to handle autocorrect and predictive text duplicating characters
         hiddenInput.addEventListener('input', (e) => {
@@ -150,8 +287,7 @@
             }
         });
 
-        // Auto-fade the help overlay
-        setTimeout(() => { document.getElementById('helpOverlay').style.opacity = '0'; }, 5000);
+        // Guide removed from start as per user request
 
         function showRipple(x, y, color) {
             const ripple = document.createElement('div');

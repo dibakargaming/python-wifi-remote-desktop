@@ -5,7 +5,7 @@ setlocal
 set SCRIPT_DIR=%~dp0
 
 echo Running initial setup and checking configuration...
-python "%SCRIPT_DIR%telegram_notifier.py"
+start "" pythonw "%SCRIPT_DIR%telegram_notifier.py"
 
 :: Define the target VBScript wrapper file in the Startup folder
 set STARTUP_DIR=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
@@ -15,7 +15,7 @@ echo Creating Startup task for Telegram Bot...
 
 :: Create a VBScript to run the Python script completely hidden (no console window)
 echo Set WshShell = CreateObject("WScript.Shell") > %TARGET_VBS%
-echo WshShell.Run "pythonw.exe """ & "%SCRIPT_DIR%telegram_notifier.py" & """", 0, False >> %TARGET_VBS%
+echo WshShell.Run "pythonw.exe ""%SCRIPT_DIR%telegram_notifier.py""", 0, False >> %TARGET_VBS%
 
 echo.
 echo =========================================================
